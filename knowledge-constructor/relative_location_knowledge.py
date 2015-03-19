@@ -13,6 +13,7 @@ import os
 import shutil
 import random
 import sys
+import cPickle
 
 from skimage.util import img_as_float
 from skimage.segmentation import slic
@@ -20,7 +21,19 @@ from skimage import io
 from skimage.segmentation import mark_boundaries
 from skimage.filter import gaussian_filter
 
-import pascal_voc_2012 as dataset
+def read(pickle_dirpath):
+    pickle_filenames = [ f for f in os.listdir(pickle_dirpath) if os.path.isfile(os.path.join(pickle_dirpath,f)) ]
+
+    relloc = {}
+    for p in pickle_filenames:
+        print('reading relloc knowledge of: %s' % (p))
+        local_relloc = None
+        with open(pickle_dirpath+'/'+p, 'rb') as input_file:
+            local_relloc = cPickle.load(input_file)
+    
+        relloc.update(local_relloc)
+
+    return relloc
 
 def construct(argv):
     '''
@@ -32,7 +45,6 @@ def construct(argv):
     img_list_filepath = argv[3]
     gt_csv_dir = argv[4]
     img_dir = argv[5]
-    prob_map_out_dir = argv[6]
 
     #
     relative_location_matrix_shape = (200,200) # following [Gould, 2008]
@@ -58,7 +70,7 @@ def construct(argv):
         img_height = img.shape[0] 
         img_width = img.shape[1]
 
-        segmentation = get_segment(img)
+        segmentation = get_segmentation(img)
         segment_list = get_segment_list(segmentation)
 
         gt_ann_filepath = gt_csv_dir + '/' + img_id + '.csv'
@@ -79,9 +91,13 @@ def construct(argv):
                 continue
 
             for label in c_labels:
-                # Force to only consider one certain object-class as the pair
-                if label['name'] is not 'dog':
-                    continue                
+                # # Force to only consider one certain object-class as the pair
+                # # Warn: May result in different probability map
+                # # Should be commented for most usage
+                # forced_label = 'sky'
+                # if label['name'] is not forced_label:
+                #     print 'WARN: forced_label=', forced_label
+                #     continue                
 
                 pixels = get_pixel_of_label(label, gt_annotation)
                 print ('Processing img_id=%s (%i/%i): segment_id=%i (%i/%i): centroid_label=%s: pair_label=%s (n_pixel=%i)' \
@@ -111,9 +127,7 @@ def construct(argv):
     sigma = (np.sqrt(variance_factor*img_height),np.sqrt(variance_factor*img_width))
     filtered_norm_prob_map = apply_gaussian_filter(sigma, norm_prob_map, relative_location_matrix_shape)
 
-    #
-    print('write_prob_map()...')
-    write_prob_map(filtered_norm_prob_map, prob_map_out_dir)
+    return filtered_norm_prob_map
 
 def init_prob_map(cprime_labels, c_labels, size):
     prob_map = dict.fromkeys(cprime_labels)
@@ -125,9 +139,10 @@ def init_prob_map(cprime_labels, c_labels, size):
 
     return prob_map
 
-def get_segment(img):
-    segmentation = slic(img, n_segments=75, compactness=13, sigma=4, enforce_connectivity=True)
-    segmentation_img = mark_boundaries(img, segmentation)
+def get_segmentation(img):
+    segmentation = slic(img, n_segments=140, compactness=13, sigma=4, enforce_connectivity=True)
+    
+    # segmentation_img = mark_boundaries(img, segmentation)
     # io.imsave('slic.jpg', segmentation_img)
 
     return segmentation
@@ -238,9 +253,6 @@ def normalize_prob_map(prob_map, relative_location_matrix_shape):
 
     for cprime, prob_map_c_given_cprime in prob_map.iteritems():
         for c,relative_location_mat in prob_map_c_given_cprime.iteritems():
-            # if c is not 'grass': # TODO remove me
-            #     continue
-            # print('processing prob_map: c= %s, given cprime= %s' % (c,cprime))
             for row in range(relative_location_matrix_shape[0]):
                 for col in range(relative_location_matrix_shape[1]):
                     val = relative_location_mat[row][col]
@@ -271,9 +283,6 @@ def write_prob_map(prob_map, out_dir):
         os.makedirs(cprime_dir)
 
         for c,relative_location_mat in prob_map_c_given_cprime.iteritems():
-            # if c is not 'grass': # TODO remove me
-            #     continue
-
             mat_filepath = cprime_dir + '/' + c + '_given_' + cprime + '.csv'
             np.savetxt(mat_filepath, relative_location_mat, delimiter=",")
 
@@ -282,9 +291,35 @@ def write_prob_map(prob_map, out_dir):
             plt.axis('off') # clear x- and y-axes
             plt.savefig(mat_img_filepath)
 
+def write(knowledge, filepath):
+    with open(filepath, 'wb') as fid:
+        cPickle.dump(knowledge, fid)
+
+def write_meta(meta, meta_filepath):
+    fo = open(meta_filepath, 'wb')
+    for m in meta:
+        fo.write(m+'\n');
+    fo.close()
+    
 def main(argv):
-    assert len(argv)==7, 'INSUFFICIENT NUMBER OF ARGVs'
-    construct(argv)
+    assert len(argv)==8, 'INSUFFICIENT NUMBER OF ARGVs'
+    dataset_name = argv[7]
+
+    global dataset
+    if dataset_name=='msrc':
+        import msrc as dataset
+    elif dataset_name=='voc':
+        import pascal_voc_2012 as dataset
+
+    #
+    relative_location = construct(argv);
+
+    print('write relative_location knowledge ...')
+    cprime = argv[1]
+    prob_map_out_dir = argv[6]
+    write_prob_map(relative_location, prob_map_out_dir)
+    write(relative_location, prob_map_out_dir+'/'+cprime+'/relative_location_wrt_'+cprime+'.pickle')
+    write_meta(argv, prob_map_out_dir+'/'+cprime+'/relative_location_wrt_'+cprime+'.meta');
 
 if __name__ == '__main__':
     main(sys.argv)
